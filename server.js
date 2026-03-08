@@ -14,11 +14,12 @@ const PORT = process.env.PORT || 3001;
 // ── Supabase ──────────────────────────────────────────────────
 const supabase = createClient(
   "https://pqgmmvxcxmhpdorvrjfk.supabase.co",
-  process.env.SUPABASE_SERVICE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBxZ21tdnhjeG1ocGRvcnZyamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MzM0ODksImV4cCI6MjA4ODUwOTQ4OX0.fu2CWqHUAbt9ykN5sIC4FBV7lVIXECRU1DimYPu0DpI"
+  process.env.SUPABASE_SERVICE_KEY ||
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBxZ21tdnhjeG1ocGRvcnZyamZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MzM0ODksImV4cCI6MjA4ODUwOTQ4OX0.fu2CWqHUAbt9ykN5sIC4FBV7lVIXECRU1DimYPu0DpI"
 );
 
 // ── Middleware ────────────────────────────────────────────────
-// Raw body needed for Stripe webhook signature verification
+// Raw body MUST come before express.json() — required for Stripe webhook verification
 app.use("/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 app.use(cors({
@@ -26,7 +27,8 @@ app.use(cors({
     "https://arisedothan.com",
     "http://localhost:3000",
     /\.netlify\.app$/,
-    /\.render\.com$/
+    /\.render\.com$/,
+    /\.github\.io$/,
   ]
 }));
 
@@ -45,11 +47,20 @@ app.get("/", (req, res) => {
 });
 
 // ── POST /create-payment-intent ───────────────────────────────
-// Called by the giving app when donor clicks "Give"
-// Returns a clientSecret the frontend uses to confirm payment
+// `amount`     = total charged to donor's card (includes fee coverage if opted in)
+// `giftAmount` = the actual donation to record in Supabase (what church receives)
+// `coverFees`  = boolean flag from the frontend
 app.post("/create-payment-intent", async (req, res) => {
   try {
-    const { amount, fund, donorName, donorEmail, freq } = req.body;
+    const {
+      amount,       // total charge to card (dollars)
+      giftAmount,   // donor's intended gift (dollars) — may differ if fees covered
+      fund,
+      donorName,
+      donorEmail,
+      freq,
+      coverFees,
+    } = req.body;
 
     if (!amount || amount < 1) {
       return res.status(400).json({ error: "Invalid amount" });
@@ -58,20 +69,27 @@ app.post("/create-payment-intent", async (req, res) => {
       return res.status(400).json({ error: "Donor name and email required" });
     }
 
-    // Amount in cents for Stripe
-    const amountCents = Math.round(parseFloat(amount) * 100);
+    // Stripe always receives the TOTAL (card charge) in cents
+    const chargeCents = Math.round(parseFloat(amount) * 100);
+
+    // The gift amount is what goes into financial records
+    const recordedGift = giftAmount
+      ? parseFloat(giftAmount)
+      : parseFloat(amount);
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount:   amountCents,
-      currency: "usd",
+      amount:        chargeCents,
+      currency:      "usd",
       receipt_email: donorEmail,
-      description: `${fund || "General Fund"} — Arise Dothan`,
+      description:   `${fund || "General Fund"} — Arise Dothan`,
       metadata: {
         donorName,
         donorEmail,
-        fund:  fund  || "General Fund",
-        freq:  freq  || "one-time",
-        source: "giving-app",
+        fund:       fund      || "General Fund",
+        freq:       freq      || "one-time",
+        giftAmount: String(recordedGift),
+        coverFees:  String(coverFees || false),
+        source:     "giving-app",
       },
     });
 
@@ -84,8 +102,9 @@ app.post("/create-payment-intent", async (req, res) => {
 });
 
 // ── POST /webhook ─────────────────────────────────────────────
-// Stripe calls this after a successful payment
-// This is where we write the confirmed donation to Supabase
+// Stripe calls this after payment is confirmed.
+// We record giftAmount (not the raw charge) in Supabase so the
+// financial dashboard always shows what the church actually received.
 app.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
@@ -101,17 +120,23 @@ app.post("/webhook", async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Only care about successful payments
   if (event.type === "payment_intent.succeeded") {
     const pi = event.data.object;
-    const { donorName, donorEmail, fund, freq } = pi.metadata;
-    const amount = pi.amount / 100; // Convert cents back to dollars
-    const today  = new Date().toISOString().split("T")[0];
+    const { donorName, donorEmail, fund, freq, giftAmount, coverFees } = pi.metadata;
+
+    // Use giftAmount from metadata — this is what the church receives.
+    // If donor covered fees: Stripe's cut comes out of the extra they added.
+    const recordedAmount = giftAmount
+      ? parseFloat(giftAmount)
+      : pi.amount / 100;
+
+    const today     = new Date().toISOString().split("T")[0];
     const freqLabel = freq === "one-time" ? "One-Time"
                     : freq.charAt(0).toUpperCase() + freq.slice(1);
+    const feeNote   = coverFees === "true" ? " · Donor covered fees" : "";
 
     try {
-      // 1. Upsert donor
+      // 1. Upsert donor record
       const nameParts = (donorName || "").trim().split(" ");
       const firstName = nameParts[0] || "";
       const lastName  = nameParts.slice(1).join(" ") || "";
@@ -131,17 +156,24 @@ app.post("/webhook", async (req, res) => {
         });
       }
 
-      // 2. Record donation
+      // 2. Record donation using GIFT amount (not the card charge)
       const { error } = await supabase.from("donations").insert({
         date:   today,
         donor:  donorName,
         type:   FUND_TYPE_MAP[fund] || "Offering",
-        amount: amount,
-        notes:  `${fund} · ${freqLabel} · Stripe ${pi.id}`,
+        amount: recordedAmount,
+        notes:  `${fund} · ${freqLabel}${feeNote} · Stripe ${pi.id}`,
       });
 
-      if (error) console.error("Supabase insert error:", error.message);
-      else console.log(`✅ Donation recorded: ${donorName} $${amount} → ${fund}`);
+      if (error) {
+        console.error("Supabase insert error:", error.message);
+      } else {
+        console.log(
+          `✅ Donation recorded: ${donorName} — gift $${recordedAmount}` +
+          (coverFees === "true" ? ` (donor covered fees, charged $${pi.amount / 100})` : "") +
+          ` → ${fund}`
+        );
+      }
 
     } catch (err) {
       console.error("Supabase error:", err.message);
