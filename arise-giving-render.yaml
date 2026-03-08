@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: arise-giving-api
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: STRIPE_SECRET_KEY
+        sync: false          # You will paste this manually in Render dashboard
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false          # You will get this after setting up the webhook in Stripe
