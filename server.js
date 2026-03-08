@@ -5,8 +5,16 @@
 
 const express = require("express");
 const cors    = require("cors");
-const stripe  = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const Stripe  = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
+
+// Initialize Stripe lazily so the env var is read at request time,
+// not at module load time (avoids "no API key" errors on Render)
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error("STRIPE_SECRET_KEY environment variable is not set.");
+  return Stripe(key);
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -77,6 +85,7 @@ app.post("/create-payment-intent", async (req, res) => {
       ? parseFloat(giftAmount)
       : parseFloat(amount);
 
+    const stripe = getStripe();
     const paymentIntent = await stripe.paymentIntents.create({
       amount:        chargeCents,
       currency:      "usd",
@@ -110,6 +119,7 @@ app.post("/webhook", async (req, res) => {
   let event;
 
   try {
+    const stripe = getStripe();
     event = stripe.webhooks.constructEvent(
       req.body,
       sig,
