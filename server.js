@@ -355,6 +355,9 @@ app.post("/webhook", async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Log every webhook event received — plain ASCII for Render compatibility
+  console.log("[WEBHOOK] Received event type: " + event.type + " id: " + event.id);
+
   // ── One-time payment succeeded ────────────────────────────
   if (event.type === "payment_intent.succeeded") {
     const pi = event.data.object;
@@ -381,13 +384,13 @@ app.post("/webhook", async (req, res) => {
             notes:  `${fund} · ${freqLabel}${feeNote} · Stripe ${pi.id}`,
           };
           if (donorId) donBody.donor_id = donorId;
-          console.log(`💳 Attempting one-time insert: ${donorName} $${recordedAmount} → ${fund}`);
+          console.log("[ONE-TIME] Attempting insert: " + donorName + " $" + recordedAmount + " -> " + fund);
           const { error } = await supabase.from("donations").insert(donBody);
           if (error) {
-            console.error("❌ Supabase insert error:", error.message, "| code:", error.code, "| details:", error.details);
-            throw new Error(`Supabase insert failed: ${error.message}`);
+            console.error("[ERROR] Supabase insert error: " + error.message + " code: " + error.code);
+            throw new Error("Supabase insert failed: " + error.message);
           }
-          console.log(`✅ One-time donation: ${donorName} $${recordedAmount} → ${fund}`);
+          console.log("[ONE-TIME] SUCCESS: " + donorName + " $" + recordedAmount + " -> " + fund);
         }
       } catch (err) { console.error("Supabase error:", err.message); }
     }
@@ -422,16 +425,16 @@ app.post("/webhook", async (req, res) => {
             notes:  `${fund} · ${freqLabel}${feeNote} · Sub ${sub.id} (${cycleLabel}) · Inv ${invoice.id}`,
           };
           if (donorId) donBody.donor_id = donorId;
-          console.log(`🔄 Attempting recurring insert: ${donorName} $${recordedAmount} → ${fund}`);
-          console.log(`   donBody: ${JSON.stringify(donBody)}`);
+          console.log("[RECURRING] Attempting insert: " + donorName + " $" + recordedAmount + " -> " + fund);
+          console.log("[RECURRING] donBody: " + JSON.stringify(donBody));
           const { error } = await supabase.from("donations").insert(donBody);
           if (error) {
             console.error("❌ Supabase insert error:", error.message, "| code:", error.code, "| details:", error.details);
             throw new Error(`Supabase insert failed: ${error.message}`);
           }
-          console.log(`✅ Recurring ${freqLabel}: ${donorName} $${recordedAmount} → ${fund} (${cycleLabel})`);
+          console.log("[RECURRING] SUCCESS: " + freqLabel + " " + donorName + " $" + recordedAmount + " -> " + fund + " (" + cycleLabel + ")");
         }
-      } catch (err) { console.error("Recurring webhook error:", err.message); }
+      } catch (err) { console.error("[RECURRING] ERROR: " + err.message); }
     }
   }
 
