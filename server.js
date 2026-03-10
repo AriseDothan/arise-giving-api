@@ -398,6 +398,7 @@ app.post("/webhook", async (req, res) => {
   // ── Recurring charge succeeded (subscription invoice) ────
   } else if (event.type === "invoice.payment_succeeded") {
     const invoice = event.data.object;
+    console.log("[RECURRING] invoice.subscription: " + invoice.subscription + " | billing_reason: " + invoice.billing_reason + " | invoice.id: " + invoice.id);
     // Only process subscription invoices
     if (invoice.subscription) {
       try {
