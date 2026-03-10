@@ -270,18 +270,29 @@ app.post("/cancel-subscription", async (req, res) => {
 app.get("/subscriptions/:email", async (req, res) => {
   try {
     const stripe = getStripe();
-    const email  = decodeURIComponent(req.params.email);
-    const customers = await stripe.customers.list({ email, limit: 5 });
-    if (!customers.data.length) return res.json({ subscriptions: [] });
+    const email  = decodeURIComponent(req.params.email).toLowerCase().trim();
 
-    const allSubs = [];
-    for (const cust of customers.data) {
-      const subs = await stripe.subscriptions.list({ customer: cust.id, status: "active", limit: 20, expand: ["data.items.data.price.product"] });
+    // Search by email (case-insensitive by normalising before lookup)
+    const customers = await stripe.customers.list({ email, limit: 5 });
+    const custIds = new Set(customers.data.map(c => c.id));
+
+    // Also search by email with original casing in case Stripe stored it differently
+    const customers2 = await stripe.customers.list({ email: req.params.email, limit: 5 });
+    customers2.data.forEach(c => custIds.add(c.id));
+
+    if (!custIds.size) return res.json({ subscriptions: [] });
+
+    const subMap = new Map(); // dedup by sub.id
+    for (const custId of custIds) {
+      const subs = await stripe.subscriptions.list({ customer: custId, status: "active", limit: 20, expand: ["data.items.data.price.product"] });
       subs.data.forEach(sub => {
-        const item  = sub.items.data[0];
-        const price = item?.price;
+        if (subMap.has(sub.id)) return;
+        // Only return subs created by this app
+        if (sub.metadata?.source !== "giving-app") return;
+        const item    = sub.items.data[0];
+        const price   = item?.price;
         const product = price?.product;
-        allSubs.push({
+        subMap.set(sub.id, {
           id:          sub.id,
           status:      sub.status,
           fund:        sub.metadata.fund || (typeof product === "object" ? product.name : "General Fund"),
@@ -289,12 +300,13 @@ app.get("/subscriptions/:email", async (req, res) => {
           giftAmount:  parseFloat(sub.metadata.giftAmount || (price?.unit_amount || 0) / 100),
           freq:        sub.metadata.freq || price?.recurring?.interval,
           coverFees:   sub.metadata.coverFees === "true",
+          donorEmail:  sub.metadata.donorEmail || email,
           created:     new Date(sub.created * 1000).toISOString().split("T")[0],
           current_period_end: new Date(sub.current_period_end * 1000).toISOString().split("T")[0],
         });
       });
     }
-    res.json({ subscriptions: allSubs });
+    res.json({ subscriptions: [...subMap.values()] });
   } catch (err) {
     console.error("Get subscriptions error:", err.message);
     res.status(500).json({ error: err.message });
