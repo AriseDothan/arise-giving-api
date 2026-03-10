@@ -53,12 +53,34 @@ async function upsertDonor(donorName, donorEmail) {
   const lastName  = nameParts.slice(1).join(" ") || "";
   const email     = (donorEmail || "").toLowerCase().trim();
   if (!email) return null; // Cannot upsert without email
+
+  // 1. Look up by email — exact match
   const { data: existing } = await supabase
     .from("donors")
     .select("id")
     .eq("email", email)
     .maybeSingle();
   if (existing) return existing.id;
+
+  // 2. No email match — check if a donor with the same name exists (admin-created records
+  //    often have no email). If found, stamp email onto that record instead of creating new.
+  if (firstName && lastName) {
+    const { data: nameMatch } = await supabase
+      .from("donors")
+      .select("id, email")
+      .ilike("first_name", firstName)
+      .ilike("last_name", lastName)
+      .maybeSingle();
+    if (nameMatch) {
+      // Stamp email onto the existing record so future lookups find it by email
+      if (!nameMatch.email) {
+        await supabase.from("donors").update({ email }).eq("id", nameMatch.id);
+      }
+      return nameMatch.id;
+    }
+  }
+
+  // 3. No match at all — create new donor
   const { data: inserted, error: insertErr } = await supabase
     .from("donors")
     .insert({ first_name: firstName, last_name: lastName, email })
@@ -346,9 +368,13 @@ app.post("/webhook", async (req, res) => {
             notes:  `${fund} · ${freqLabel}${feeNote} · Stripe ${pi.id}`,
           };
           if (donorId) donBody.donor_id = donorId;
+          console.log(`💳 Attempting one-time insert: ${donorName} $${recordedAmount} → ${fund}`);
           const { error } = await supabase.from("donations").insert(donBody);
-          if (error) console.error("Supabase insert error:", error.message);
-          else console.log(`✅ One-time donation: ${donorName} $${recordedAmount} → ${fund}`);
+          if (error) {
+            console.error("❌ Supabase insert error:", error.message, "| code:", error.code, "| details:", error.details);
+            throw new Error(`Supabase insert failed: ${error.message}`);
+          }
+          console.log(`✅ One-time donation: ${donorName} $${recordedAmount} → ${fund}`);
         }
       } catch (err) { console.error("Supabase error:", err.message); }
     }
@@ -383,9 +409,14 @@ app.post("/webhook", async (req, res) => {
             notes:  `${fund} · ${freqLabel}${feeNote} · Sub ${sub.id} (${cycleLabel}) · Inv ${invoice.id}`,
           };
           if (donorId) donBody.donor_id = donorId;
+          console.log(`🔄 Attempting recurring insert: ${donorName} $${recordedAmount} → ${fund}`);
+          console.log(`   donBody: ${JSON.stringify(donBody)}`);
           const { error } = await supabase.from("donations").insert(donBody);
-          if (error) console.error("Supabase insert error:", error.message);
-          else console.log(`✅ Recurring ${freqLabel}: ${donorName} $${recordedAmount} → ${fund} (${cycleLabel})`);
+          if (error) {
+            console.error("❌ Supabase insert error:", error.message, "| code:", error.code, "| details:", error.details);
+            throw new Error(`Supabase insert failed: ${error.message}`);
+          }
+          console.log(`✅ Recurring ${freqLabel}: ${donorName} $${recordedAmount} → ${fund} (${cycleLabel})`);
         }
       } catch (err) { console.error("Recurring webhook error:", err.message); }
     }
