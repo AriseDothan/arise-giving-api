@@ -54,11 +54,11 @@ async function upsertDonor(donorName, donorEmail) {
   const email     = (donorEmail || "").toLowerCase().trim();
   if (!email) return null; // Cannot upsert without email
 
-  // 1. Look up by email — exact match
+  // 1. Look up by email — case-insensitive
   const { data: existing } = await supabase
     .from("donors")
     .select("id")
-    .eq("email", email)
+    .ilike("email", email)
     .maybeSingle();
   if (existing) return existing.id;
 
@@ -406,7 +406,7 @@ app.post("/webhook", async (req, res) => {
           const stripe = getStripe();
           const sub    = await stripe.subscriptions.retrieve(invoice.subscription);
           // Skip subscriptions not created by this app
-          if (sub.metadata?.source !== "giving-app") { res.json({ received: true }); return; }
+          if (sub.metadata?.source !== "giving-app") return; // outer res.json() handles response
           const { donorName, donorEmail, fund, freq, giftAmount, coverFees } = sub.metadata;
           const recordedAmount = giftAmount ? parseFloat(giftAmount) : invoice.amount_paid / 100;
           const today          = new Date().toISOString().split("T")[0];
