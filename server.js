@@ -402,9 +402,11 @@ app.post("/webhook", async (req, res) => {
     if (invoice.subscription) {
       try {
         // Dedup: Stripe may deliver invoice.payment_succeeded more than once
-        const { data: dup } = await supabase
-          .from("donations").select("id").ilike("notes", `%${invoice.id}%`).maybeSingle();
-        if (dup) { console.log(`⏭ Skipping duplicate invoice: ${invoice.id}`); }
+        console.log("[RECURRING] Checking dedup for invoice: " + invoice.id);
+        const { data: dup, error: dupErr } = await supabase
+          .from("donations").select("id").ilike("notes", "%" + invoice.id + "%").maybeSingle();
+        if (dupErr) console.error("[RECURRING] Dedup query error: " + dupErr.message + " code: " + dupErr.code);
+        if (dup) { console.log("[RECURRING] Skipping duplicate invoice: " + invoice.id); }
         else {
           const stripe = getStripe();
           const sub    = await stripe.subscriptions.retrieve(invoice.subscription);
@@ -434,7 +436,7 @@ app.post("/webhook", async (req, res) => {
           }
           console.log("[RECURRING] SUCCESS: " + freqLabel + " " + donorName + " $" + recordedAmount + " -> " + fund + " (" + cycleLabel + ")");
         }
-      } catch (err) { console.error("[RECURRING] ERROR: " + err.message); }
+      } catch (err) { console.error("[RECURRING] ERROR: " + err.message + " | stack: " + (err.stack||"none")); }
     }
   }
 
