@@ -398,9 +398,14 @@ app.post("/webhook", async (req, res) => {
   // ── Recurring charge succeeded (subscription invoice) ────
   } else if (event.type === "invoice.payment_succeeded") {
     const invoice = event.data.object;
-    console.log("[RECURRING] invoice.subscription: " + invoice.subscription + " | billing_reason: " + invoice.billing_reason + " | invoice.id: " + invoice.id);
+    // Stripe API versions differ on where subscription ID lives — check all known locations
+    const subscriptionId = invoice.subscription
+      || invoice.parent?.subscription_details?.subscription
+      || invoice.lines?.data?.[0]?.subscription
+      || invoice.lines?.data?.[0]?.parent?.subscription_details?.subscription;
+    console.log("[RECURRING] subscriptionId: " + subscriptionId + " | billing_reason: " + invoice.billing_reason + " | invoice.id: " + invoice.id);
     // Only process subscription invoices
-    if (invoice.subscription) {
+    if (subscriptionId) {
       try {
         // Dedup: Stripe may deliver invoice.payment_succeeded more than once
         console.log("[RECURRING] Checking dedup for invoice: " + invoice.id);
@@ -410,7 +415,7 @@ app.post("/webhook", async (req, res) => {
         if (dup) { console.log("[RECURRING] Skipping duplicate invoice: " + invoice.id); }
         else {
           const stripe = getStripe();
-          const sub    = await stripe.subscriptions.retrieve(invoice.subscription);
+          const sub    = await stripe.subscriptions.retrieve(subscriptionId);
           // Skip subscriptions not created by this app
           if (sub.metadata?.source !== "giving-app") return; // outer res.json() handles response
           const { donorName, donorEmail, fund, freq, giftAmount, coverFees } = sub.metadata;
