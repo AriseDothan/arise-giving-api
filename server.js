@@ -276,32 +276,33 @@ app.get("/subscriptions/:email", async (req, res) => {
     const customers = await stripe.customers.list({ email, limit: 5 });
     const custIds = new Set(customers.data.map(c => c.id));
 
-    // Also search by email with original casing in case Stripe stored it differently
-    const customers2 = await stripe.customers.list({ email: req.params.email, limit: 5 });
-    customers2.data.forEach(c => custIds.add(c.id));
+    // Also search with original casing in case Stripe stored it differently
+    const originalEmail = decodeURIComponent(req.params.email).trim();
+    if (originalEmail !== email) {
+      const customers2 = await stripe.customers.list({ email: originalEmail, limit: 5 });
+      customers2.data.forEach(c => custIds.add(c.id));
+    }
 
     if (!custIds.size) return res.json({ subscriptions: [] });
 
     const subMap = new Map(); // dedup by sub.id
     for (const custId of custIds) {
-      const subs = await stripe.subscriptions.list({ customer: custId, status: "active", limit: 20, expand: ["data.items.data.price.product"] });
+      // No expand — we rely entirely on metadata (fund, freq, giftAmount) stored at creation
+      const subs = await stripe.subscriptions.list({ customer: custId, status: "active", limit: 20 });
       subs.data.forEach(sub => {
         if (subMap.has(sub.id)) return;
         // Only return subs created by this app
         if (sub.metadata?.source !== "giving-app") return;
-        const item    = sub.items.data[0];
-        const price   = item?.price;
-        const product = price?.product;
+        const item  = sub.items?.data?.[0];
+        const price = item?.price;
         subMap.set(sub.id, {
-          id:          sub.id,
-          status:      sub.status,
-          fund:        sub.metadata.fund || (typeof product === "object" ? product.name : "General Fund"),
-          amount:      (price?.unit_amount || 0) / 100,
-          giftAmount:  parseFloat(sub.metadata.giftAmount || (price?.unit_amount || 0) / 100),
-          freq:        sub.metadata.freq || price?.recurring?.interval,
-          coverFees:   sub.metadata.coverFees === "true",
-          donorEmail:  sub.metadata.donorEmail || email,
-          created:     new Date(sub.created * 1000).toISOString().split("T")[0],
+          id:         sub.id,
+          status:     sub.status,
+          fund:       sub.metadata.fund || "General Fund",
+          giftAmount: parseFloat(sub.metadata.giftAmount) || (price?.unit_amount || 0) / 100,
+          freq:       sub.metadata.freq || price?.recurring?.interval || "monthly",
+          coverFees:  sub.metadata.coverFees === "true",
+          created:    new Date(sub.created * 1000).toISOString().split("T")[0],
           current_period_end: new Date(sub.current_period_end * 1000).toISOString().split("T")[0],
         });
       });
