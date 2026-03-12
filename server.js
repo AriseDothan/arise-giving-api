@@ -350,13 +350,68 @@ app.get("/admin/subscriptions", async (req, res) => {
   }
 });
 
-// ── POST /admin/cancel-subscription  (admin portal) ──────────
+// ── POST /admin/cancel-subscription  (admin portal) ────────────
 app.post("/admin/cancel-subscription", async (req, res) => {
   try {
     const { subscriptionId } = req.body;
     if (!subscriptionId) return res.status(400).json({ error: "subscriptionId required" });
     const stripe = getStripe();
+
+    // Retrieve sub metadata BEFORE cancelling so we have donor info for the email
+    const sub = await stripe.subscriptions.retrieve(subscriptionId);
+    const { donorName, donorEmail, fund, freq, giftAmount } = sub.metadata || {};
+
     await stripe.subscriptions.cancel(subscriptionId);
+
+    // Send cancellation email via Resend if API key is configured and we have an email
+    if (process.env.RESEND_API_KEY && donorEmail) {
+      const freqLabel = freq === "weekly" ? "weekly" : "monthly";
+      const amtLabel  = giftAmount ? `$${parseFloat(giftAmount).toFixed(2)}` : "your recurring gift";
+      const fundLabel = fund || "General Fund";
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            from:    process.env.EMAIL_FROM || "giving@arisedothan.com",
+            to:      donorEmail,
+            subject: "Your Recurring Gift Has Been Cancelled \u2014 Arise Dothan",
+            html: `
+              <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0A1A2E">
+                <div style="background:#0752BC;padding:24px 32px;border-radius:10px 10px 0 0">
+                  <div style="color:#fff;font-size:1.2rem;font-weight:800;letter-spacing:.3px">Arise Dothan</div>
+                  <div style="color:rgba(255,255,255,.75);font-size:.8rem;margin-top:2px">Giving Notification</div>
+                </div>
+                <div style="background:#fff;padding:28px 32px;border:1px solid #E6F0FC;border-top:none;border-radius:0 0 10px 10px">
+                  <p style="font-size:1rem;margin-bottom:18px">Hi ${donorName || "there"},</p>
+                  <p style="font-size:.93rem;line-height:1.6;margin-bottom:18px">
+                    We want to let you know that your <strong>${freqLabel} recurring gift</strong> of
+                    <strong>${amtLabel}</strong> to the <strong>${fundLabel}</strong> has been cancelled
+                    at the request of our team.
+                  </p>
+                  <p style="font-size:.93rem;line-height:1.6;margin-bottom:18px">
+                    No further charges will be made. If you have any questions or would like to
+                    set up a new recurring gift, please visit our giving portal or contact us directly.
+                  </p>
+                  <a href="https://arisedothan.com" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem">Visit Giving Portal</a>
+                  <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5">
+                    Thank you for your generosity and support of Arise Dothan.<br>
+                    Dothan, Alabama
+                  </p>
+                </div>
+              </div>`,
+          }),
+        });
+        console.log("[CANCEL EMAIL] Sent to " + donorEmail);
+      } catch (emailErr) {
+        // Non-fatal \u2014 log but don't fail the cancellation
+        console.error("[CANCEL EMAIL] Failed:", emailErr.message);
+      }
+    }
+
     res.json({ cancelled: true });
   } catch (err) {
     console.error("Admin cancel subscription error:", err.message);
