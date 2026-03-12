@@ -618,6 +618,157 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ── Start server ──────────────────────────────────────────────
+// -- GET /admin/users  (list all portal users + roles) --------
+app.get("/admin/users", async (req, res) => {
+  try {
+    const supabaseUrl = "https://pqgmmvxcxmhpdorvrjfk.supabase.co";
+    const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) return res.status(500).json({ error: "SUPABASE_SERVICE_KEY not configured on server" });
+    const r = await fetch(`${supabaseUrl}/auth/v1/admin/users?per_page=200`, {
+      headers: { "apikey": serviceKey, "Authorization": `Bearer ${serviceKey}` }
+    });
+    if (!r.ok) throw new Error("Failed to fetch users from Supabase");
+    const data = await r.json();
+    const users = (data.users || []).map(u => ({
+      id:           u.id,
+      email:        u.email,
+      name:         u.user_metadata?.name || "",
+      role:         u.user_metadata?.role || "donor",
+      created_at:   u.created_at,
+      last_sign_in: u.last_sign_in_at || null,
+    }));
+    res.json({ users });
+  } catch (err) {
+    console.error("List users error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /admin/invite-user -----------------------------------
+app.post("/admin/invite-user", async (req, res) => {
+  try {
+    const { email, name, role } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+    if (!["admin","staff"].includes(role)) return res.status(400).json({ error: "Role must be admin or staff" });
+    const supabaseUrl = "https://pqgmmvxcxmhpdorvrjfk.supabase.co";
+    const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) return res.status(500).json({ error: "SUPABASE_SERVICE_KEY not configured on server" });
+    const r = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
+      method: "POST",
+      headers: {
+        "apikey": serviceKey,
+        "Authorization": `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        email_confirm: true,
+        user_metadata: { name: name || email.split("@")[0], role },
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.message || data.msg || "Failed to create user");
+
+    // Send access notification email via Resend if configured
+    if (process.env.RESEND_API_KEY) {
+      const roleLabel = role === "admin" ? "Admin" : "Staff";
+      const displayName = name || email.split("@")[0];
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            from: process.env.EMAIL_FROM || "giving@arisedothan.com",
+            to:   email,
+            subject: "You have been added to the Arise Dothan Portal",
+            html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0A1A2E;">
+              <div style="background:#0752BC;padding:24px 32px;border-radius:10px 10px 0 0;">
+                <div style="color:#fff;font-size:1.2rem;font-weight:800;">Arise Dothan</div>
+                <div style="color:rgba(255,255,255,.75);font-size:.8rem;margin-top:2px;">Portal Access</div>
+              </div>
+              <div style="background:#fff;padding:28px 32px;border:1px solid #E6F0FC;border-top:none;border-radius:0 0 10px 10px;">
+                <p style="font-size:1rem;margin-bottom:18px;">Hi ${displayName},</p>
+                <p style="font-size:.93rem;line-height:1.6;margin-bottom:18px;">
+                  You have been granted <strong>${roleLabel}</strong> access to the Arise Dothan portal.
+                  Visit the portal and sign in using this email address. If this is your first time,
+                  use the <strong>Forgot Password</strong> link to set your password.
+                </p>
+                <a href="https://arisedothan.com" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem;">Go to Portal</a>
+                <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5;">Arise Dothan - Dothan, Alabama</p>
+              </div>
+            </div>`,
+          }),
+        });
+        console.log("[INVITE EMAIL] Sent to " + email);
+      } catch (emailErr) {
+        console.error("[INVITE EMAIL] Failed:", emailErr.message);
+      }
+    }
+    res.json({ invited: true, userId: data.id });
+  } catch (err) {
+    console.error("Invite user error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- PATCH /admin/update-user-role ----------------------------
+app.patch("/admin/update-user-role", async (req, res) => {
+  try {
+    const { userId, role } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    if (!["admin","staff","donor"].includes(role)) return res.status(400).json({ error: "Invalid role" });
+    const supabaseUrl = "https://pqgmmvxcxmhpdorvrjfk.supabase.co";
+    const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) return res.status(500).json({ error: "SUPABASE_SERVICE_KEY not configured on server" });
+    const r = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+      method: "PUT",
+      headers: {
+        "apikey": serviceKey,
+        "Authorization": `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ user_metadata: { role } }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(()=>({}));
+      throw new Error(d.message || "Failed to update role");
+    }
+    console.log("[USER MGMT] Updated user " + userId + " to role: " + role);
+    res.json({ updated: true });
+  } catch (err) {
+    console.error("Update role error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- DELETE /admin/revoke-user --------------------------------
+app.delete("/admin/revoke-user", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const supabaseUrl = "https://pqgmmvxcxmhpdorvrjfk.supabase.co";
+    const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+    if (!serviceKey) return res.status(500).json({ error: "SUPABASE_SERVICE_KEY not configured on server" });
+    const r = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+      method: "DELETE",
+      headers: { "apikey": serviceKey, "Authorization": `Bearer ${serviceKey}` },
+    });
+    if (!r.ok && r.status !== 204) {
+      const d = await r.json().catch(()=>({}));
+      throw new Error(d.message || "Failed to revoke user");
+    }
+    console.log("[USER MGMT] Revoked user " + userId);
+    res.json({ revoked: true });
+  } catch (err) {
+    console.error("Revoke user error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`Arise Giving API running on port ${PORT}`);
 });
