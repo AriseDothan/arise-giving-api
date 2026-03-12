@@ -39,7 +39,7 @@ app.use(cors({
 
 // ── Fund → Donation Type mapping ─────────────────────────────
 const FUND_TYPE_MAP = {
-  "General Fund":  "Offering",
+  "General Fund":  "General Fund",
   "Building Fund": "Building Fund",
   "Missions Fund": "Missions",
   "Youth Fund":    "Special Gift",
@@ -314,17 +314,23 @@ app.get("/subscriptions/:email", async (req, res) => {
   }
 });
 
-// ── GET /admin/subscriptions  (all active, for admin portal) ──
+// ── GET /admin/subscriptions  (active + paused, for admin portal) ──
 app.get("/admin/subscriptions", async (req, res) => {
   try {
     const stripe = getStripe();
-    const subs   = await stripe.subscriptions.list({ status: "active", limit: 100, expand: ["data.customer","data.items.data.price"] });
-    const result = subs.data.map(sub => {
+    // Fetch both active and paused subscriptions in parallel
+    const [activeSubs, pausedSubs] = await Promise.all([
+      stripe.subscriptions.list({ status: "active", limit: 100, expand: ["data.customer","data.items.data.price"] }),
+      stripe.subscriptions.list({ status: "paused", limit: 100, expand: ["data.customer","data.items.data.price"] }),
+    ]);
+    const allSubs = [...activeSubs.data, ...pausedSubs.data];
+    const result = allSubs.map(sub => {
       const item  = sub.items.data[0];
       const price = item?.price;
       const cust  = sub.customer;
       return {
         id:          sub.id,
+        itemId:      item?.id || null,
         donorName:   sub.metadata.donorName  || (typeof cust === "object" ? cust.name  : ""),
         donorEmail:  sub.metadata.donorEmail || (typeof cust === "object" ? cust.email : ""),
         fund:        sub.metadata.fund       || "General Fund",
@@ -332,6 +338,7 @@ app.get("/admin/subscriptions", async (req, res) => {
         giftAmount:  parseFloat(sub.metadata.giftAmount || (price?.unit_amount||0)/100),
         freq:        sub.metadata.freq       || price?.recurring?.interval,
         status:      sub.status,
+        paused:      !!sub.pause_collection,
         created:     new Date(sub.created * 1000).toISOString().split("T")[0],
         current_period_end: new Date(sub.current_period_end * 1000).toISOString().split("T")[0],
       };
@@ -343,7 +350,112 @@ app.get("/admin/subscriptions", async (req, res) => {
   }
 });
 
+// ── POST /admin/cancel-subscription  (admin portal) ──────────
+app.post("/admin/cancel-subscription", async (req, res) => {
+  try {
+    const { subscriptionId } = req.body;
+    if (!subscriptionId) return res.status(400).json({ error: "subscriptionId required" });
+    const stripe = getStripe();
+    await stripe.subscriptions.cancel(subscriptionId);
+    res.json({ cancelled: true });
+  } catch (err) {
+    console.error("Admin cancel subscription error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /webhook ─────────────────────────────────────────────
+
+// ── POST /admin/pause-subscription ──────────────────────────────
+app.post("/admin/pause-subscription", async (req, res) => {
+  try {
+    const { subscriptionId } = req.body;
+    if (!subscriptionId) return res.status(400).json({ error: "subscriptionId required" });
+    const stripe = getStripe();
+    await stripe.subscriptions.update(subscriptionId, {
+      pause_collection: { behavior: "void" },
+    });
+    res.json({ paused: true });
+  } catch (err) {
+    console.error("Pause subscription error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /admin/resume-subscription ─────────────────────────────
+app.post("/admin/resume-subscription", async (req, res) => {
+  try {
+    const { subscriptionId } = req.body;
+    if (!subscriptionId) return res.status(400).json({ error: "subscriptionId required" });
+    const stripe = getStripe();
+    await stripe.subscriptions.update(subscriptionId, {
+      pause_collection: "",
+    });
+    res.json({ resumed: true });
+  } catch (err) {
+    console.error("Resume subscription error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /admin/edit-subscription ────────────────────────────────
+// Updates the gift amount and/or fund on an existing subscription.
+// Creates a new Stripe Price for the new amount and swaps it onto the
+// subscription item, then updates metadata so webhooks record correctly.
+app.post("/admin/edit-subscription", async (req, res) => {
+  try {
+    const { subscriptionId, itemId, newAmount, newFund, freq } = req.body;
+    if (!subscriptionId || !itemId) return res.status(400).json({ error: "subscriptionId and itemId required" });
+    if (!newAmount || newAmount < 1)  return res.status(400).json({ error: "Invalid amount" });
+
+    const stripe      = getStripe();
+    const chargeCents = Math.round(parseFloat(newAmount) * 100);
+    const fundName    = newFund || "General Fund";
+    const interval    = (freq === "weekly" || freq === "week") ? "week" : "month";
+
+    // Find or create Stripe Product for this fund (mirrors create-subscription logic)
+    const productId = `arise_${fundName.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"")}`;
+    let product;
+    try {
+      product = await stripe.products.retrieve(productId);
+      if (!product.active) {
+        product = await stripe.products.create({ id: `${productId}_${Date.now()}`, name: `${fundName} — Arise Dothan` });
+      }
+    } catch {
+      try {
+        product = await stripe.products.create({ id: productId, name: `${fundName} — Arise Dothan` });
+      } catch (createErr) {
+        if (createErr.message?.includes("already exists")) {
+          product = await stripe.products.retrieve(productId);
+        } else {
+          throw createErr;
+        }
+      }
+    }
+
+    // Create a new Price for the updated amount
+    const newPrice = await stripe.prices.create({
+      unit_amount: chargeCents,
+      currency:    "usd",
+      recurring:   { interval },
+      product:     product.id,
+      metadata:    { fundName, interval },
+    });
+
+    // Swap the subscription item to the new price and update metadata
+    await stripe.subscriptions.update(subscriptionId, {
+      items: [{ id: itemId, price: newPrice.id }],
+      metadata: { fund: fundName, giftAmount: String(parseFloat(newAmount)) },
+      proration_behavior: "none",
+    });
+
+    res.json({ updated: true });
+  } catch (err) {
+    console.error("Edit subscription error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
