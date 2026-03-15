@@ -629,14 +629,16 @@ app.get("/admin/users", async (req, res) => {
     });
     if (!r.ok) throw new Error("Failed to fetch users from Supabase");
     const data = await r.json();
-    const users = (data.users || []).map(u => ({
-      id:           u.id,
-      email:        u.email,
-      name:         u.user_metadata?.name || "",
-      role:         u.user_metadata?.role || "donor",
-      created_at:   u.created_at,
-      last_sign_in: u.last_sign_in_at || null,
-    }));
+    const users = (data.users || [])
+      .filter(u => ["admin","staff"].includes(u.user_metadata?.role))
+      .map(u => ({
+        id:           u.id,
+        email:        u.email,
+        name:         u.user_metadata?.name || "",
+        role:         u.user_metadata?.role,
+        created_at:   u.created_at,
+        last_sign_in: u.last_sign_in_at || null,
+      }));
     res.json({ users });
   } catch (err) {
     console.error("List users error:", err.message);
