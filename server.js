@@ -655,6 +655,10 @@ app.post("/admin/invite-user", async (req, res) => {
     const supabaseUrl = "https://pqgmmvxcxmhpdorvrjfk.supabase.co";
     const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
     if (!serviceKey) return res.status(500).json({ error: "SUPABASE_SERVICE_KEY not configured on server" });
+
+    // Create the user with email already confirmed and no password set.
+    // email_confirm:true suppresses Supabase's own confirmation email.
+    // We send our own branded email via Resend directing them to use Forgot Password.
     const r = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
       method: "POST",
       headers: {
@@ -671,9 +675,9 @@ app.post("/admin/invite-user", async (req, res) => {
     const data = await r.json();
     if (!r.ok) throw new Error(data.message || data.msg || "Failed to create user");
 
-    // Send access notification email via Resend if configured
+    // Send our own branded invite email via Resend
     if (process.env.RESEND_API_KEY) {
-      const roleLabel = role === "admin" ? "Admin" : "Staff";
+      const roleLabel   = role === "admin" ? "Admin" : "Staff";
       const displayName = name || email.split("@")[0];
       try {
         await fetch("https://api.resend.com/emails", {
@@ -683,7 +687,7 @@ app.post("/admin/invite-user", async (req, res) => {
             "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
           },
           body: JSON.stringify({
-            from: process.env.EMAIL_FROM || "giving@arisedothan.com",
+            from: process.env.EMAIL_FROM || "info@arisedothan.com",
             to:   email,
             subject: "You have been added to the Arise Dothan Portal",
             html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0A1A2E;">
@@ -695,10 +699,14 @@ app.post("/admin/invite-user", async (req, res) => {
                 <p style="font-size:1rem;margin-bottom:18px;">Hi ${displayName},</p>
                 <p style="font-size:.93rem;line-height:1.6;margin-bottom:18px;">
                   You have been granted <strong>${roleLabel}</strong> access to the Arise Dothan portal.
-                  Visit the portal, enter your email address, and click <strong>Forgot Password</strong> on the sign-in screen to set your password and get started.
+                </p>
+                <p style="font-size:.93rem;line-height:1.6;margin-bottom:24px;">
+                  To get started, click the button below to go to the portal, then click
+                  <strong>Forgot Password?</strong> on the sign-in screen and enter this email address.
+                  You will receive a link to set your password.
                 </p>
                 <a href="https://arisedothan.com/give" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem;">Go to Portal</a>
-                <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5;">Arise Dothan - Dothan, Alabama</p>
+                <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5;">Arise Dothan &mdash; Dothan, Alabama</p>
               </div>
             </div>`,
           }),
@@ -714,6 +722,7 @@ app.post("/admin/invite-user", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // -- PATCH /admin/update-user-role ----------------------------
 app.patch("/admin/update-user-role", async (req, res) => {
