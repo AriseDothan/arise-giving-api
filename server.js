@@ -695,8 +695,7 @@ app.post("/admin/invite-user", async (req, res) => {
                 <p style="font-size:1rem;margin-bottom:18px;">Hi ${displayName},</p>
                 <p style="font-size:.93rem;line-height:1.6;margin-bottom:18px;">
                   You have been granted <strong>${roleLabel}</strong> access to the Arise Dothan portal.
-                  Visit the portal and sign in using this email address. If this is your first time,
-                  use the <strong>Forgot Password</strong> link to set your password.
+                  Visit the portal, enter your email address, and click <strong>Forgot Password</strong> on the sign-in screen to set your password and get started.
                 </p>
                 <a href="https://arisedothan.com/give" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem;">Go to Portal</a>
                 <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5;">Arise Dothan - Dothan, Alabama</p>
