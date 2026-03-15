@@ -771,6 +771,121 @@ app.delete("/admin/revoke-user", async (req, res) => {
 });
 
 
+// -- POST /admin/send-giving-statements -----------------------
+// Sends annual giving statements to one or more donors via Resend.
+// Body: { year, statements: [{ donorName, donorEmail, address, accountNumber, ein, total, gifts }] }
+app.post("/admin/send-giving-statements", async (req, res) => {
+  try {
+    const { year, statements } = req.body;
+    if (!year || !Array.isArray(statements) || !statements.length)
+      return res.status(400).json({ error: "year and statements array required" });
+    if (!process.env.RESEND_API_KEY)
+      return res.status(500).json({ error: "RESEND_API_KEY not configured on server" });
+
+    const from = process.env.EMAIL_FROM || "giving@arisedothan.com";
+    const results = { sent: 0, skipped: 0, failed: 0, errors: [] };
+
+    for (const stmt of statements) {
+      const { donorName, donorEmail, address, accountNumber, ein, total, gifts } = stmt;
+      if (!donorEmail) { results.skipped++; continue; }
+
+      const fmtAmt = n => Number(n||0).toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 });
+      const giftRows = (gifts||[]).map((g,i) =>
+        `<tr style="background:${i%2?"#E6F0FC":"#fff"}">
+          <td style="padding:8px 12px;font-size:.85rem;border-bottom:1px solid #C8DCF5;">${g.date||""}</td>
+          <td style="padding:8px 12px;font-size:.85rem;border-bottom:1px solid #C8DCF5;">${g.fund||""}</td>
+          <td style="padding:8px 12px;font-size:.85rem;border-bottom:1px solid #C8DCF5;text-align:right;color:#7B8F43;font-weight:700;font-family:Montserrat,sans-serif;">$${fmtAmt(g.amount)}</td>
+        </tr>`
+      ).join("");
+
+      const html = `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#0A1A2E;">
+          <div style="background:#0752BC;padding:24px 32px;border-radius:10px 10px 0 0;">
+            <div style="color:#fff;font-size:1.2rem;font-weight:800;">Arise Dothan</div>
+            <div style="color:rgba(255,255,255,.75);font-size:.8rem;margin-top:2px;">Annual Giving Statement - Tax Year ${year}</div>
+          </div>
+          <div style="background:#fff;padding:28px 32px;border:1px solid #E6F0FC;border-top:none;border-radius:0 0 10px 10px;">
+
+            <div style="border-bottom:1px solid #C8DCF5;padding-bottom:18px;margin-bottom:18px;">
+              <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#6B8BB5;margin-bottom:5px;">Prepared For</div>
+              <div style="font-size:1.05rem;font-weight:800;">${donorName}</div>
+              ${address ? `<div style="font-size:.83rem;color:#6B8BB5;margin-top:3px;">${address}</div>` : ""}
+              ${accountNumber ? `<div style="font-size:.68rem;font-weight:700;color:#0752BC;letter-spacing:1px;margin-top:4px;">Account # ${accountNumber}</div>` : ""}
+            </div>
+
+            <div style="background:#EAF0DC;border-radius:10px;padding:16px;margin-bottom:20px;border-left:4px solid #7B8F43;">
+              <div style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#7B8F43;">Total Contributions - ${year}</div>
+              <div style="font-size:2rem;font-weight:800;color:#7B8F43;font-family:Montserrat,sans-serif;">$${fmtAmt(total)}</div>
+              <div style="font-size:.78rem;color:#6B8BB5;margin-top:2px;">${(gifts||[]).length} gift(s) recorded</div>
+            </div>
+
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+              <thead>
+                <tr style="background:#E6F0FC;">
+                  <th style="padding:9px 12px;text-align:left;font-size:.62rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#0752BC;border-bottom:1px solid #C8DCF5;">Date</th>
+                  <th style="padding:9px 12px;text-align:left;font-size:.62rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#0752BC;border-bottom:1px solid #C8DCF5;">Fund</th>
+                  <th style="padding:9px 12px;text-align:right;font-size:.62rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#0752BC;border-bottom:1px solid #C8DCF5;">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${giftRows}
+                <tr style="background:#EAF0DC;">
+                  <td colspan="2" style="padding:9px 12px;font-weight:800;font-size:.82rem;">TOTAL</td>
+                  <td style="padding:9px 12px;text-align:right;font-weight:800;color:#7B8F43;font-family:Montserrat,sans-serif;">$${fmtAmt(total)}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style="background:#FDF0DC;border-radius:8px;padding:14px;border-left:4px solid #BC6907;font-size:.8rem;color:#2E2E2E;line-height:1.6;">
+              <strong style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#BC6907;display:block;margin-bottom:6px;">Contribution Notice</strong>
+              Arise Dothan is a nonprofit religious corporation organized under the laws of the State of Alabama and authorized to receive charitable contributions.
+              We are organized exclusively for religious purposes and are structured to qualify for federal tax-exempt status.
+              No goods or services were provided in exchange for these contributions unless otherwise noted.
+              Please consult your tax advisor regarding the deductibility of your gift. We appreciate your generous support.
+              ${ein ? `<div style="margin-top:10px;padding-top:8px;border-top:1px solid #F0D8A8;"><strong style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#BC6907;">Federal Tax ID (EIN):</strong> <span style="font-weight:700;">${ein}</span></div>` : ""}
+            </div>
+
+          </div>
+        </div>`;
+
+      try {
+        const r = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { "Content-Type":"application/json", "Authorization":"Bearer "+process.env.RESEND_API_KEY },
+          body: JSON.stringify({
+            from,
+            to: donorEmail,
+            subject: `Your ${year} Annual Giving Statement - Arise Dothan`,
+            html,
+          }),
+        });
+        if (r.ok) {
+          results.sent++;
+          console.log("[BULK STMT] Sent to " + donorEmail);
+        } else {
+          const err = await r.json().catch(()=>({}));
+          results.failed++;
+          results.errors.push(`${donorEmail}: ${err.message||"send failed"}`);
+          console.error("[BULK STMT] Failed for " + donorEmail + ":", err.message);
+        }
+        // Small delay between emails to stay within Resend rate limits
+        await new Promise(r => setTimeout(r, 120));
+      } catch (emailErr) {
+        results.failed++;
+        results.errors.push(`${donorEmail}: ${emailErr.message}`);
+        console.error("[BULK STMT] Error for " + donorEmail + ":", emailErr.message);
+      }
+    }
+
+    console.log("[BULK STMT] Complete - sent:" + results.sent + " skipped:" + results.skipped + " failed:" + results.failed);
+    res.json(results);
+  } catch (err) {
+    console.error("Bulk giving statement error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`Arise Giving API running on port ${PORT}`);
 });
