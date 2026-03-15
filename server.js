@@ -396,7 +396,7 @@ app.post("/admin/cancel-subscription", async (req, res) => {
                     No further charges will be made. If you have any questions or would like to
                     set up a new recurring gift, please visit our giving portal or contact us directly.
                   </p>
-                  <a href="https://arisedothan.com" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem">Visit Giving Portal</a>
+                  <a href="https://arisedothan.com/give" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem">Visit Giving Portal</a>
                   <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5">
                     Thank you for your generosity and support of Arise Dothan.<br>
                     Dothan, Alabama
@@ -698,7 +698,7 @@ app.post("/admin/invite-user", async (req, res) => {
                   Visit the portal and sign in using this email address. If this is your first time,
                   use the <strong>Forgot Password</strong> link to set your password.
                 </p>
-                <a href="https://arisedothan.com" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem;">Go to Portal</a>
+                <a href="https://arisedothan.com/give" style="display:inline-block;background:#0752BC;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:.88rem;">Go to Portal</a>
                 <p style="margin-top:28px;font-size:.8rem;color:#6B8BB5;">Arise Dothan - Dothan, Alabama</p>
               </div>
             </div>`,
