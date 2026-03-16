@@ -894,6 +894,25 @@ app.post("/admin/send-giving-statements", async (req, res) => {
 });
 
 
+// -- POST /admin/save-check-image --------------------------------
+// Saves a donation_images record using the service key, bypassing RLS.
+app.post("/admin/save-check-image", async (req, res) => {
+  try {
+    const { donation_id, donor_id, storage_path, filename, uploaded_by } = req.body;
+    if (!donation_id || !storage_path) return res.status(400).json({ error: "donation_id and storage_path required" });
+    const { data, error } = await supabase
+      .from("donation_images")
+      .insert({ donation_id, donor_id: donor_id || null, storage_path, filename, uploaded_by })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    res.json({ saved: true, id: data.id });
+  } catch (err) {
+    console.error("Save check image error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Arise Giving API running on port ${PORT}`);
 });
