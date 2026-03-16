@@ -944,6 +944,26 @@ app.post("/staff/submit-expense", async (req, res) => {
   }
 });
 
+// -- GET /staff/my-expenses ---------------------------------------
+// Returns expenses submitted by a specific staff member.
+app.get("/staff/my-expenses", async (req, res) => {
+  try {
+    const { submitted_by } = req.query;
+    if (!submitted_by) return res.status(400).json({ error: "submitted_by required" });
+    const { data, error } = await supabase
+      .from("expenses")
+      .select("id,date,description,amount,category,approval_status")
+      .eq("submitted_by", submitted_by)
+      .order("date", { ascending: false })
+      .limit(25);
+    if (error) throw new Error(error.message);
+    res.json({ expenses: data || [] });
+  } catch (err) {
+    console.error("Staff get expenses error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Arise Giving API running on port ${PORT}`);
 });
