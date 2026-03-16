@@ -913,6 +913,37 @@ app.post("/admin/save-check-image", async (req, res) => {
   }
 });
 
+// -- POST /staff/submit-expense -----------------------------------
+// Staff expense submission using service key, bypassing RLS.
+app.post("/staff/submit-expense", async (req, res) => {
+  try {
+    const { date, description, amount, category, vendor, notes, submitted_by } = req.body;
+    if (!date || !description || !amount) {
+      return res.status(400).json({ error: "date, description, and amount are required" });
+    }
+    const { data, error } = await supabase
+      .from("expenses")
+      .insert({
+        date,
+        description,
+        amount: parseFloat(amount),
+        category: category || null,
+        vendor: vendor || null,
+        notes: notes || null,
+        submitted_by: submitted_by || null,
+        approval_status: "pending_approval",
+      })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    console.log("[STAFF EXPENSE] Submitted by " + submitted_by + ": " + description + " $" + amount);
+    res.json({ saved: true, id: data.id });
+  } catch (err) {
+    console.error("Staff expense submission error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Arise Giving API running on port ${PORT}`);
 });
