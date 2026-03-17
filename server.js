@@ -913,14 +913,65 @@ app.post("/admin/save-check-image", async (req, res) => {
   }
 });
 
+// -- Shared: send expense notification email ----------------------
+async function sendExpenseEmail(to, subject, bodyHtml) {
+  if (!process.env.RESEND_API_KEY || !to) return;
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + process.env.RESEND_API_KEY,
+      },
+      body: JSON.stringify({
+        from: process.env.EMAIL_FROM || "info@arisedothan.com",
+        to,
+        subject,
+        html: bodyHtml,
+      }),
+    });
+  } catch(e) {
+    console.error("[EXPENSE EMAIL] Failed to " + to + ":", e.message);
+  }
+}
+
+function expenseEmailBody(headline, color, staffName, description, amount, date, category, notes, extra) {
+  const fmt = n => "$" + Number(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#0A1A2E;">
+    <div style="background:#0752BC;padding:24px 32px;border-radius:10px 10px 0 0;">
+      <div style="color:#fff;font-size:1.2rem;font-weight:800;">Arise Dothan</div>
+      <div style="color:rgba(255,255,255,.75);font-size:.8rem;margin-top:2px;">Expense Notification</div>
+    </div>
+    <div style="background:#fff;padding:28px 32px;border:1px solid #E6F0FC;border-top:none;border-radius:0 0 10px 10px;">
+      <div style="background:${color};border-radius:8px;padding:12px 16px;margin-bottom:20px;">
+        <div style="font-weight:800;font-size:.9rem;">${headline}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+        <tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;width:120px;">Submitted By</td><td style="padding:6px 0;font-size:.83rem;font-weight:600;">${staffName}</td></tr>
+        <tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;">Description</td><td style="padding:6px 0;font-size:.83rem;font-weight:600;">${description}</td></tr>
+        <tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;">Amount</td><td style="padding:6px 0;font-size:.83rem;font-weight:800;color:#0752BC;">${fmt(amount)}</td></tr>
+        <tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;">Date</td><td style="padding:6px 0;font-size:.83rem;">${date}</td></tr>
+        ${category ? `<tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;">Category</td><td style="padding:6px 0;font-size:.83rem;">${category}</td></tr>` : ""}
+        ${notes ? `<tr><td style="padding:6px 0;font-size:.83rem;color:#6B8BB5;">Notes</td><td style="padding:6px 0;font-size:.83rem;">${notes}</td></tr>` : ""}
+      </table>
+      ${extra || ""}
+      <p style="margin-top:24px;font-size:.8rem;color:#6B8BB5;">Arise Dothan &mdash; Dothan, Alabama</p>
+    </div>
+  </div>`;
+}
+
 // -- POST /staff/submit-expense -----------------------------------
-// Staff expense submission using service key, bypassing RLS.
 app.post("/staff/submit-expense", async (req, res) => {
   try {
-    const { date, description, amount, category, vendor, notes, submitted_by } = req.body;
+    const { date, description, amount, category, vendor, notes, submitted_by, staff_email } = req.body;
     if (!date || !description || !amount) {
       return res.status(400).json({ error: "date, description, and amount are required" });
     }
+    // Store staff email in submitted_by as "Name|email" so no schema change needed
+    const submittedByValue = staff_email
+      ? `${submitted_by || ""}|${staff_email}`
+      : (submitted_by || null);
+
     const { data, error } = await supabase
       .from("expenses")
       .insert({
@@ -930,16 +981,131 @@ app.post("/staff/submit-expense", async (req, res) => {
         category: category || null,
         vendor: vendor || null,
         notes: notes || null,
-        submitted_by: submitted_by || null,
+        submitted_by: submittedByValue,
         approval_status: "pending_approval",
       })
       .select()
       .single();
     if (error) throw new Error(error.message);
     console.log("[STAFF EXPENSE] Submitted by " + submitted_by + ": " + description + " $" + amount);
+
+    // Send emails
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const staffName  = submitted_by || "Staff";
+    const html_staff = expenseEmailBody(
+      "Your expense has been submitted for approval.",
+      "#E6F0FC;color:#0752BC",
+      staffName, description, amount, date, category, notes,
+      `<p style="font-size:.83rem;color:#5a7a9a;">Your submission is pending review by an admin. You will receive an email when it is approved or declined.</p>`
+    );
+    const html_admin = expenseEmailBody(
+      "A new expense has been submitted and requires your approval.",
+      "#FFF3CD;color:#856404",
+      staffName, description, amount, date, category, notes,
+      `<p style="font-size:.83rem;color:#5a7a9a;">Please log in to the admin portal to review and approve or decline this expense.</p>`
+    );
+    if (staff_email) await sendExpenseEmail(staff_email, "Expense Submitted - Arise Dothan", html_staff);
+    if (adminEmail)  await sendExpenseEmail(adminEmail,  "New Expense Pending Approval - Arise Dothan", html_admin);
+
     res.json({ saved: true, id: data.id });
   } catch (err) {
     console.error("Staff expense submission error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /admin/approve-expense ----------------------------------
+app.post("/admin/approve-expense", async (req, res) => {
+  try {
+    const { expenseId, approved_by } = req.body;
+    if (!expenseId) return res.status(400).json({ error: "expenseId required" });
+
+    // Fetch the expense first so we have all details for the email
+    const { data: exp, error: fetchErr } = await supabase
+      .from("expenses")
+      .select("*")
+      .eq("id", expenseId)
+      .single();
+    if (fetchErr) throw new Error(fetchErr.message);
+
+    // Update status
+    const { error: updateErr } = await supabase
+      .from("expenses")
+      .update({ approval_status: "approved", approved_by, approved_at: new Date().toISOString() })
+      .eq("id", expenseId);
+    if (updateErr) throw new Error(updateErr.message);
+
+    // Parse staff name and email from submitted_by field ("Name|email" format)
+    const parts      = (exp.submitted_by || "").split("|");
+    const staffName  = parts[0] || exp.submitted_by || "Staff";
+    const staffEmail = parts[1] || null;
+    const adminEmail = process.env.ADMIN_EMAIL;
+
+    const html_staff = expenseEmailBody(
+      "Your expense has been approved!",
+      "#EAF0DC;color:#4a6a28",
+      staffName, exp.description, exp.amount, exp.date, exp.category, exp.notes,
+      `<p style="font-size:.83rem;color:#5a7a9a;">This expense has been approved by ${approved_by || "an admin"}.</p>`
+    );
+    const html_admin = expenseEmailBody(
+      "Expense approved by " + (approved_by || "admin") + ".",
+      "#EAF0DC;color:#4a6a28",
+      staffName, exp.description, exp.amount, exp.date, exp.category, exp.notes, ""
+    );
+    if (staffEmail) await sendExpenseEmail(staffEmail, "Expense Approved - Arise Dothan", html_staff);
+    if (adminEmail) await sendExpenseEmail(adminEmail, "Expense Approved - Arise Dothan", html_admin);
+
+    res.json({ approved: true });
+  } catch (err) {
+    console.error("Approve expense error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /admin/decline-expense ----------------------------------
+app.post("/admin/decline-expense", async (req, res) => {
+  try {
+    const { expenseId, declined_by } = req.body;
+    if (!expenseId) return res.status(400).json({ error: "expenseId required" });
+
+    // Fetch expense details before updating
+    const { data: exp, error: fetchErr } = await supabase
+      .from("expenses")
+      .select("*")
+      .eq("id", expenseId)
+      .single();
+    if (fetchErr) throw new Error(fetchErr.message);
+
+    // Update status to declined (keep the record)
+    const { error: updateErr } = await supabase
+      .from("expenses")
+      .update({ approval_status: "declined", approved_by: declined_by, approved_at: new Date().toISOString() })
+      .eq("id", expenseId);
+    if (updateErr) throw new Error(updateErr.message);
+
+    // Parse staff name and email
+    const parts      = (exp.submitted_by || "").split("|");
+    const staffName  = parts[0] || exp.submitted_by || "Staff";
+    const staffEmail = parts[1] || null;
+    const adminEmail = process.env.ADMIN_EMAIL;
+
+    const html_staff = expenseEmailBody(
+      "Your expense was not approved.",
+      "#FAEAEA;color:#C3423F",
+      staffName, exp.description, exp.amount, exp.date, exp.category, exp.notes,
+      `<p style="font-size:.83rem;color:#5a7a9a;">This expense was reviewed and not approved by ${declined_by || "an admin"}. Please contact your admin if you have questions.</p>`
+    );
+    const html_admin = expenseEmailBody(
+      "Expense declined by " + (declined_by || "admin") + ".",
+      "#FAEAEA;color:#C3423F",
+      staffName, exp.description, exp.amount, exp.date, exp.category, exp.notes, ""
+    );
+    if (staffEmail) await sendExpenseEmail(staffEmail, "Expense Not Approved - Arise Dothan", html_staff);
+    if (adminEmail) await sendExpenseEmail(adminEmail, "Expense Declined - Arise Dothan", html_admin);
+
+    res.json({ declined: true });
+  } catch (err) {
+    console.error("Decline expense error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
